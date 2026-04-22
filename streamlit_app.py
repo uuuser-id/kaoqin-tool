@@ -7,7 +7,7 @@ warnings.filterwarnings("ignore")
 
 # 页面配置
 st.set_page_config(page_title="晚自习考勤工具", layout="wide")
-st.title("📚 晚自习考勤自动生成工具")
+st.title("📚 晚自习考勤自动生成工具 V1.0")
 
 # ==============================================
 # 读取学生基础信息（内置你的表格）
