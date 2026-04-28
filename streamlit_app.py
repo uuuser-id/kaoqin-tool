@@ -1,21 +1,10 @@
-# 晚自习考勤自动生成工具 - 网页版（微信可直接打开）
 import streamlit as st
-import pandas as pd
-from datetime import datetime
-import warnings
-warnings.filterwarnings("ignore")
+import re
+from datetime import date
 
-# 页面配置
-st.set_page_config(page_title="晚自习考勤工具", layout="wide")
-st.title("📚 晚自习考勤自动生成工具 V1.0")
-
-# ==============================================
-# 读取学生基础信息（内置你的表格）
-# ==============================================
-@st.cache_data
-def load_student_data():
-    data = """
-班级,姓名,学号,缺勤
+# ====================== 1. 内嵌全部学生数据 + 外语标记 ======================
+def get_all_students():
+    raw_text = """
 财务25-1,王思朋,2530240101,
 财务25-1,刘宇轩,2530240102,
 财务25-1,张姝媛,2530240103,
@@ -127,7 +116,7 @@ def load_student_data():
 供管25-2,金雪,2530290219,
 供管25-2,张博文,2530290220,
 供管25-2,李洁阳,2530290221,
-供管25-2,陈思航,2530290222,？
+供管25-2,陈思航,2530290222,
 供管25-2,薛惠麟,2530290223,
 供管25-2,梁钰涵,2530290224,
 供管25-2,李一鸣,2530290225,
@@ -251,32 +240,34 @@ def load_student_data():
 旅游25-1,代玉,2530180123,
 旅游25-1,王雨涵,2530180124,
 旅游25-1,王子滕,2530180125,
-"""
-    import io
-    df = pd.read_csv(io.StringIO(data))
-    student_map = {}
-    for _, row in df.iterrows():
-        cls = str(row["班级"]).strip()
-        name = str(row["姓名"]).strip()
-        sid = str(row["学号"]).strip()
-        note = str(row["缺勤"]).strip()
-        seq = sid[-2:]
-        if note and note != "nan":
-            continue
-        if len(name) == 2:
-            name = name[0] + "  " + name[1]
-        if cls not in student_map:
-            student_map[cls] = {}
-        student_map[cls][seq] = (name, sid)
-    return student_map
+    """.strip()
 
-# ==============================================
-# 读取课程表（内置你的表格）
-# ==============================================
-@st.cache_data
-def load_course_data():
-    data = """
-班级,姓名,学号,周一,周三,周五
+    student_list = []
+    foreign_ids = set()
+
+    for line in raw_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = [p.strip() for p in line.split(",") if p.strip()]
+        if len(parts) >= 3:
+            clazz = parts[0]
+            name = parts[1]
+            sid = parts[2]
+            tag = parts[3] if len(parts)>=4 else ""
+            student_list.append({
+                "clazz": clazz,
+                "name": name,
+                "sid": sid
+            })
+            # 标记日语/俄语 外语生 永久免晚自习
+            if tag in ("日语","俄语"):
+                foreign_ids.add(sid)
+    return student_list, foreign_ids
+
+# ====================== 2. 内嵌选修课上课名单 ======================
+def get_elective_dict():
+    elective_raw = """
 财务25-1,李良宇,2430240125,,
 财务25-1,王思朋,2530240101,,,上课
 财务25-1,刘宇轩,2530240102,上课,,
@@ -513,85 +504,86 @@ def load_course_data():
 电商25-3,夏睿,2530280328,,,上课
 电商25-3,薛清宇,2530280329,上课,上课,
 电商25-3,袁子涵,2530280330,,上课,
-"""
-    import io
-    df = pd.read_csv(io.StringIO(data))
-    course_map = {}
-    for _, row in df.iterrows():
-        name = str(row["姓名"]).strip()
-        mon = str(row["周一"]).strip()
-        wed = str(row["周三"]).strip()
-        fri = str(row["周五"]).strip()
-        course_map[name] = {"周一": mon, "周三": wed, "周五": fri}
-    return course_map
-
-# ==============================================
-# 日期转星期
-# ==============================================
-def get_week_day_from_title(title):
-    try:
-        date_part = title.split("晚自习")[0].strip()
-        dt = datetime.strptime(f"2026年{date_part}", "%Y年%m月%d日")
-        weekday = dt.weekday()
-        week_map = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-        return week_map[weekday]
-    except:
-        return ""
-
-# ==============================================
-# 生成逻辑
-# ==============================================
-def generate_text(input_text):
-    student_map = load_student_data()
-    course_map = load_course_data()
-    lines = input_text.strip().splitlines()
-    output = []
-    current_class = None
-    today = get_week_day_from_title(lines[0]) if lines else ""
-
-    for line in lines:
+    """.strip()
+    # 只保留有「上课」标记的学号
+    elective_set = set()
+    for line in elective_raw.splitlines():
         line = line.strip()
         if not line:
-            output.append("")
             continue
-        if line in student_map:
-            current_class = line
-            output.append(line)
-            continue
-        if line.isdigit() and len(line) == 2:
-            if not current_class or line not in student_map[current_class]:
-                output.append(line)
+        parts = [p.strip() for p in line.split(",")]
+        sid = parts[2]
+        has_class = any("上课" in p for p in parts)
+        if has_class:
+            elective_set.add(sid)
+    return elective_set
+
+# ====================== 工具函数 ======================
+def get_student_by_sid(sid, student_list):
+    for s in student_list:
+        if s["sid"] == sid:
+            return s
+    return None
+
+# ====================== 主程序 ======================
+def main():
+    st.set_page_config(page_title="晚自习考勤工具", layout="wide")
+    st.title("晚自习考勤自动生成工具")
+
+    # 侧边栏日期选择
+    with st.sidebar:
+        st.header("📅 选择晚自习日期")
+        selected_date = st.date_input("日期", date.today())
+
+    # 自动生成抬头
+    date_head = f"{selected_date} 晚自习"
+
+    # 加载内嵌数据
+    student_list, foreign_sid = get_all_students()
+    elective_sid = get_elective_dict()
+
+    # 输入区域
+    st.subheader("待补全名单（无需手动填写日期）")
+    input_text = st.text_area("粘贴班级 + 学号列表", height=220)
+
+    res = [date_head]
+    now_class = ""
+
+    if input_text.strip():
+        lines = input_text.splitlines()
+        for line in lines:
+            line = line.strip()
+            if not line:
                 continue
-            name, sid = student_map[current_class][line]
-            real_name = name.replace(" ", "")
-            skip = False
-            if today in ["周一", "周三", "周五"]:
-                val = course_map.get(real_name, {}).get(today, "")
-                if val and val != "nan":
-                    skip = True
-            if not skip:
-                output.append(f"{line}{name}{sid}")
-            continue
-        output.append(line)
-    return "\n".join(output)
+            # 识别班级
+            if re.match(r'^[\u4e00-\u9fa5]', line):
+                now_class = line
+                res.append(line)
+            # 识别学号
+            elif line.isdigit():
+                sid = line
+                # 双重过滤：外语生 + 选修课
+                if sid in foreign_sid:
+                    continue
+                if sid in elective_sid:
+                    continue
+                # 补全信息
+                stu = get_student_by_sid(sid, student_list)
+                if stu:
+                    res.append(f"{stu['sid']} {stu['name']} {stu['clazz']}")
+                else:
+                    res.append(sid)
 
-# ==============================================
-# 网页界面
-# ==============================================
-col1, col2 = st.columns(2)
+    out_content = "\n".join(res)
 
-with col1:
-    st.subheader("✍️ 输入未完成名单")
-    input_txt = st.text_area("粘贴内容", height=350)
-    run = st.button("🚀 生成填充结果", use_container_width=True)
+    # 输出区域
+    st.subheader("生成完成结果")
+    st.text_area("最终考勤内容", value=out_content, height=300)
 
-with col2:
-    st.subheader("📄 输出结果")
-    if run and input_txt:
-        result = generate_text(input_txt)
-        st.text_area("结果", result, height=350)
-    else:
-        st.text_area("结果", "请输入内容并点击生成", height=350)
+    # 一键复制
+    if st.button("📋 一键复制结果"):
+        st.code(out_content, language="text")
+        st.success("✅ 复制成功，微信/文档直接粘贴使用")
 
-st.markdown("---")
-st.caption("✅ 功能：自动匹配姓名学号 | 自动过滤周一/三/五有课学生 | 自动排除缺勤/特殊情况")
+if __name__ == "__main__":
+    main()
