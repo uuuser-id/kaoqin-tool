@@ -562,10 +562,13 @@ def main():
             # 识别学号
             elif line.isdigit():
                 sid = line
-                # 双重过滤：外语生 + 选修课
+                # 先判断是否需要过滤
+                skip = False
                 if sid in foreign_sid:
-                    continue
+                    skip = True
                 if sid in elective_sid:
+                    skip = True
+                if skip:
                     continue
                 # 补全信息
                 stu = get_student_by_sid(sid, student_list)
